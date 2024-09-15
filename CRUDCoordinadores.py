@@ -82,7 +82,7 @@ class FormularioCoordinadores(wx.Frame):
         self.conn = mysql.connector.connect(
             host="localhost",
             user="root",
-            password="123456789",
+            password="1234",
             database="tesina"
         )
         self.cursor = self.conn.cursor()
