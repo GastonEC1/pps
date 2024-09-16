@@ -4,6 +4,7 @@ import mysql.connector
 from mysql.connector import Error
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+import pandas as pd
 import os
 
 class FormularioCaja(wx.Frame):
@@ -30,8 +31,8 @@ class FormularioCaja(wx.Frame):
         self.descripcion_label = wx.StaticText(panel, label="Descripción:")
         self.descripcion_text = wx.TextCtrl(panel, style=wx.TE_MULTILINE)
 
-        self.viaje_label = wx.StaticText(panel, label="ID de Viaje:")
-        self.viaje_text = wx.TextCtrl(panel)
+        self.viaje_label = wx.StaticText(panel, label="Destino de Viaje:")
+        self.viaje_combo = wx.ComboBox(panel, style=wx.CB_READONLY)
 
         # Create buttons
         self.guardar_button = wx.Button(panel, label="Guardar")
@@ -49,7 +50,7 @@ class FormularioCaja(wx.Frame):
         self.caja_list.InsertColumn(2, "Monto", width=100)
         self.caja_list.InsertColumn(3, "Fecha", width=120)
         self.caja_list.InsertColumn(4, "Descripción", width=200)
-        self.caja_list.InsertColumn(5, "ID Viaje", width=100)
+        self.caja_list.InsertColumn(5, "Destino Viaje", width=150)
 
         # Arrange controls in sizers
         formGridSizer = wx.GridBagSizer(5, 5)
@@ -62,7 +63,7 @@ class FormularioCaja(wx.Frame):
         formGridSizer.Add(self.descripcion_label, pos=(3, 0), flag=wx.ALIGN_RIGHT)
         formGridSizer.Add(self.descripcion_text, pos=(3, 1), flag=wx.EXPAND)
         formGridSizer.Add(self.viaje_label, pos=(4, 0), flag=wx.ALIGN_RIGHT)
-        formGridSizer.Add(self.viaje_text, pos=(4, 1), flag=wx.EXPAND)
+        formGridSizer.Add(self.viaje_combo, pos=(4, 1), flag=wx.EXPAND)
         formGridSizer.Add(self.guardar_button, pos=(5, 0))
         formGridSizer.Add(self.modificar_button, pos=(5, 1))
         formGridSizer.Add(self.eliminar_button, pos=(5, 2))
@@ -102,6 +103,9 @@ class FormularioCaja(wx.Frame):
         # Ensure Historial table exists
         self.create_historial_table()
 
+        # Load existing Viajes data into ComboBox
+        self.load_viajes()
+
         # Load existing Caja data
         self.load_caja()
 
@@ -113,7 +117,8 @@ class FormularioCaja(wx.Frame):
             monto DECIMAL(10, 2),
             fecha DATE,
             descripcion TEXT,
-            viaje_id INT
+            viaje_id INT,
+            FOREIGN KEY (viaje_id) REFERENCES viajes(Id)
         )
         """
         try:
@@ -122,9 +127,24 @@ class FormularioCaja(wx.Frame):
         except Error as err:
             wx.MessageBox(f'Error al crear la tabla Historial: {err}', 'Error', wx.OK | wx.ICON_ERROR)
 
+    def load_viajes(self):
+        query = "SELECT Id, Destino FROM viajes"
+        try:
+            self.cursor.execute(query)
+            viajes = self.cursor.fetchall()
+            self.viaje_combo.Clear()
+            for viaje in viajes:
+                self.viaje_combo.Append(f"{viaje[1]} (ID: {viaje[0]})", viaje[0])
+        except Error as err:
+            wx.MessageBox(f'Error al cargar datos de viajes: {err}', 'Error', wx.OK | wx.ICON_ERROR)
+
     def load_caja(self):
         self.caja_list.DeleteAllItems()
-        query = "SELECT Id, tipo, monto, fecha, descripcion, viaje_id FROM Caja"
+        query = """
+        SELECT Caja.Id, Caja.tipo, Caja.monto, Caja.fecha, Caja.descripcion, viajes.Destino
+        FROM Caja
+        JOIN viajes ON Caja.viaje_id = viajes.Id
+        """
         try:
             self.cursor.execute(query)
             for row in self.cursor.fetchall():
@@ -137,7 +157,7 @@ class FormularioCaja(wx.Frame):
         monto = self.monto_text.GetValue().strip()
         fecha = self.fecha_picker.GetValue().FormatISODate()
         descripcion = self.descripcion_text.GetValue().strip()
-        viaje_id = self.viaje_text.GetValue().strip()
+        viaje_id = self.viaje_combo.GetClientData(self.viaje_combo.GetSelection())
 
         # Validate that all fields are filled
         if not all([tipo, monto, descripcion, viaje_id]):
@@ -148,6 +168,12 @@ class FormularioCaja(wx.Frame):
         try:
             self.cursor.execute(query, (tipo, monto, fecha, descripcion, viaje_id))
             self.conn.commit()
+
+            # Also insert into Historial
+            query_historial = "INSERT INTO Historial (tipo, monto, fecha, descripcion, viaje_id) VALUES (%s, %s, %s, %s, %s)"
+            self.cursor.execute(query_historial, (tipo, monto, fecha, descripcion, viaje_id))
+            self.conn.commit()
+
             wx.MessageBox('Datos guardados correctamente', 'Info', wx.OK | wx.ICON_INFORMATION)
             self.load_caja()
         except Error as err:
@@ -164,14 +190,18 @@ class FormularioCaja(wx.Frame):
         monto = self.monto_text.GetValue().strip()
         fecha = self.fecha_picker.GetValue().FormatISODate()
         descripcion = self.descripcion_text.GetValue().strip()
-        viaje_id = self.viaje_text.GetValue().strip()
+        viaje_id = self.viaje_combo.GetClientData(self.viaje_combo.GetSelection())
 
         # Validate that all fields are filled
         if not all([tipo, monto, descripcion, viaje_id]):
             wx.MessageBox('Todos los campos deben estar completos.', 'Información', wx.OK | wx.ICON_WARNING)
             return
 
-        query = "UPDATE Caja SET tipo=%s, monto=%s, fecha=%s, descripcion=%s, viaje_id=%s WHERE Id=%s"
+        query = """
+        UPDATE Caja
+        SET tipo = %s, monto = %s, fecha = %s, descripcion = %s, viaje_id = %s
+        WHERE Id = %s
+        """
         try:
             self.cursor.execute(query, (tipo, monto, fecha, descripcion, viaje_id, id_caja))
             self.conn.commit()
@@ -187,24 +217,35 @@ class FormularioCaja(wx.Frame):
             return
 
         id_caja = self.caja_list.GetItemText(selected_index, 0)
-        query = "DELETE FROM Caja WHERE Id = %s"
-        try:
-            self.cursor.execute(query, (id_caja,))
-            self.conn.commit()
-            wx.MessageBox('Datos eliminados correctamente', 'Info', wx.OK | wx.ICON_INFORMATION)
-            self.load_caja()
-        except Error as err:
-            wx.MessageBox(f'Error al eliminar datos: {err}', 'Error', wx.OK | wx.ICON_ERROR)
+
+        if wx.MessageBox('¿Está seguro de que desea eliminar esta entrada?', 'Confirmación', wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
+            query = "DELETE FROM Caja WHERE Id = %s"
+            try:
+                self.cursor.execute(query, (id_caja,))
+                self.conn.commit()
+                wx.MessageBox('Entrada eliminada correctamente', 'Info', wx.OK | wx.ICON_INFORMATION)
+                self.load_caja()
+            except Error as err:
+                wx.MessageBox(f'Error al eliminar datos: {err}', 'Error', wx.OK | wx.ICON_ERROR)
 
     def on_buscar(self, event):
-        fecha = wx.GetTextFromUser("Ingrese la fecha a buscar (YYYY-MM-DD):", "Buscar Fecha")
-        if fecha:
-            self.caja_list.DeleteAllItems()
-            query = "SELECT Id, tipo, monto, fecha, descripcion, viaje_id FROM Caja WHERE fecha = %s"
+        search_dialog = wx.TextEntryDialog(self, "Ingrese el ID de la entrada de caja a buscar:", "Buscar Entrada")
+        if search_dialog.ShowModal() == wx.ID_OK:
+            search_id = search_dialog.GetValue().strip()
+            query = """
+            SELECT Caja.Id, Caja.tipo, Caja.monto, Caja.fecha, Caja.descripcion, viajes.Destino
+            FROM Caja
+            JOIN viajes ON Caja.viaje_id = viajes.Id
+            WHERE Caja.Id = %s
+            """
             try:
-                self.cursor.execute(query, (fecha,))
-                for row in self.cursor.fetchall():
-                    self.caja_list.Append(row)
+                self.cursor.execute(query, (search_id,))
+                result = self.cursor.fetchone()
+                if result:
+                    self.caja_list.DeleteAllItems()
+                    self.caja_list.Append(result)
+                else:
+                    wx.MessageBox('No se encontraron resultados.', 'Información', wx.OK | wx.ICON_INFORMATION)
             except Error as err:
                 wx.MessageBox(f'Error al buscar datos: {err}', 'Error', wx.OK | wx.ICON_ERROR)
 
@@ -213,120 +254,135 @@ class FormularioCaja(wx.Frame):
         self.monto_text.SetValue('')
         self.fecha_picker.SetValue(wx.DateTime.Now())
         self.descripcion_text.SetValue('')
-        self.viaje_text.SetValue('')
+        self.viaje_combo.SetSelection(-1)
 
     def on_finalizar_dia(self, event):
+        # Generar el informe PDF para el día actual
         fecha = wx.DateTime.Now().FormatISODate()
-        self.mover_datos_a_historial(fecha)
-        self.caja_list.DeleteAllItems()
+        file_name = f"Informe_{fecha}.pdf"
 
-    def mover_datos_a_historial(self, fecha):
+        c = canvas.Canvas(file_name, pagesize=letter)
+        width, height = letter
+
+        c.drawString(100, height - 100, f"Informe del Día {fecha}")
+        c.drawString(100, height - 120, "Detalles de Caja:")
+
         query = """
-        INSERT INTO Historial (tipo, monto, fecha, descripcion, viaje_id)
-        SELECT tipo, monto, fecha, descripcion, viaje_id
+        SELECT Caja.Id, Caja.tipo, Caja.monto, Caja.fecha, Caja.descripcion, viajes.Destino
         FROM Caja
-        WHERE fecha = %s
+        JOIN viajes ON Caja.viaje_id = viajes.Id
+        WHERE Caja.fecha = %s
         """
         try:
             self.cursor.execute(query, (fecha,))
-            self.conn.commit()
-            wx.MessageBox('Datos movidos al historial correctamente', 'Info', wx.OK | wx.ICON_INFORMATION)
+            y = height - 140
+            for row in self.cursor.fetchall():
+                line = f"ID: {row[0]}, Tipo: {row[1]}, Monto: {row[2]}, Fecha: {row[3]}, Descripción: {row[4]}, Destino: {row[5]}"
+                c.drawString(100, y, line)
+                y -= 20
+            c.save()
+
+            wx.MessageBox(f'Informe del día generado: {file_name}', 'Info', wx.OK | wx.ICON_INFORMATION)
         except Error as err:
-            wx.MessageBox(f'Error al mover datos al historial: {err}', 'Error', wx.OK | wx.ICON_ERROR)
+            wx.MessageBox(f'Error al generar el informe: {err}', 'Error', wx.OK | wx.ICON_ERROR)
 
     def on_historial(self, event):
-        self.historial_frame = wx.Frame(self, title="Historial de Caja", size=(800, 600))
-        panel = wx.Panel(self.historial_frame)
+        historial_dialog = wx.Dialog(self, title="Historial de Caja", size=(800, 600))
+
         sizer = wx.BoxSizer(wx.VERTICAL)
 
-        # Create ListCtrl to show historial entries
-        self.historial_list = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.LC_SORT_ASCENDING)
-        self.historial_list.InsertColumn(0, "ID", width=50)
-        self.historial_list.InsertColumn(1, "Tipo", width=100)
-        self.historial_list.InsertColumn(2, "Monto", width=100)
-        self.historial_list.InsertColumn(3, "Fecha", width=120)
-        self.historial_list.InsertColumn(4, "Descripción", width=200)
-        self.historial_list.InsertColumn(5, "ID Viaje", width=100)
+        # Create date range selectors
+        date_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        start_date_label = wx.StaticText(historial_dialog, label="Fecha de Inicio:")
+        end_date_label = wx.StaticText(historial_dialog, label="Fecha de Fin:")
+        self.start_date_picker = adv.DatePickerCtrl(historial_dialog, style=adv.DP_DROPDOWN | adv.DP_SHOWCENTURY)
+        self.end_date_picker = adv.DatePickerCtrl(historial_dialog, style=adv.DP_DROPDOWN | adv.DP_SHOWCENTURY)
+        filter_button = wx.Button(historial_dialog, label="Filtrar")
+        export_button = wx.Button(historial_dialog, label="Exportar a Excel")
 
-        # Create DatePicker for filtering
-        self.fecha_historial_picker = adv.DatePickerCtrl(panel, style=adv.DP_DROPDOWN | adv.DP_SHOWCENTURY)
-        self.buscar_historial_button = wx.Button(panel, label="Buscar Historial")
+        date_sizer.Add(start_date_label, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
+        date_sizer.Add(self.start_date_picker, flag=wx.EXPAND | wx.RIGHT, border=10)
+        date_sizer.Add(end_date_label, flag=wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, border=5)
+        date_sizer.Add(self.end_date_picker, flag=wx.EXPAND | wx.RIGHT, border=10)
+        date_sizer.Add(filter_button)
+        date_sizer.Add(export_button, flag=wx.LEFT, border=10)
 
-        # Arrange controls in sizers
-        sizer.Add(wx.StaticText(panel, label="Selecciona una fecha para filtrar:"), flag=wx.ALL, border=5)
-        sizer.Add(self.fecha_historial_picker, flag=wx.EXPAND | wx.ALL, border=5)
-        sizer.Add(self.buscar_historial_button, flag=wx.EXPAND | wx.ALL, border=5)
-        sizer.Add(self.historial_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=5)
+        # Create ListCtrl for historial
+        historial_list = wx.ListCtrl(historial_dialog, style=wx.LC_REPORT | wx.LC_SORT_ASCENDING)
+        historial_list.InsertColumn(0, "ID", width=50)
+        historial_list.InsertColumn(1, "Tipo", width=100)
+        historial_list.InsertColumn(2, "Monto", width=100)
+        historial_list.InsertColumn(3, "Fecha", width=120)
+        historial_list.InsertColumn(4, "Descripción", width=200)
+        historial_list.InsertColumn(5, "Destino Viaje", width=150)
 
-        panel.SetSizer(sizer)
-        self.historial_frame.Bind(wx.EVT_BUTTON, self.on_buscar_historial, self.buscar_historial_button)
-        self.historial_frame.Bind(wx.EVT_LIST_ITEM_SELECTED, self.on_historial_item_selected, self.historial_list)
+        def on_filter(event):
+            start_date = self.start_date_picker.GetValue().FormatISODate()
+            end_date = self.end_date_picker.GetValue().FormatISODate()
 
-        self.load_historial()
-        self.historial_frame.Show()
+            query = """
+            SELECT Historial.Id, Historial.tipo, Historial.monto, Historial.fecha, Historial.descripcion, viajes.Destino
+            FROM Historial
+            JOIN viajes ON Historial.viaje_id = viajes.Id
+            WHERE Historial.fecha BETWEEN %s AND %s
+            """
+            try:
+                self.cursor.execute(query, (start_date, end_date))
+                historial_list.DeleteAllItems()
+                for row in self.cursor.fetchall():
+                    historial_list.Append(row)
+            except Error as err:
+                wx.MessageBox(f'Error al cargar datos del historial: {err}', 'Error', wx.OK | wx.ICON_ERROR)
 
-    def load_historial(self):
-        self.historial_list.DeleteAllItems()
-        query = "SELECT Id, tipo, monto, fecha, descripcion, viaje_id FROM Historial"
-        try:
-            self.cursor.execute(query)
-            for row in self.cursor.fetchall():
-                self.historial_list.Append(row)
-        except Error as err:
-            wx.MessageBox(f'Error al cargar datos del historial: {err}', 'Error', wx.OK | wx.ICON_ERROR)
+        def on_export(event):
+            start_date = self.start_date_picker.GetValue().FormatISODate()
+            end_date = self.end_date_picker.GetValue().FormatISODate()
 
-    def on_buscar_historial(self, event):
-        fecha = self.fecha_historial_picker.GetValue().FormatISODate()
-        self.historial_list.DeleteAllItems()
-        query = "SELECT Id, tipo, monto, fecha, descripcion, viaje_id FROM Historial WHERE fecha = %s"
-        try:
-            self.cursor.execute(query, (fecha,))
-            for row in self.cursor.fetchall():
-                self.historial_list.Append(row)
-        except Error as err:
-            wx.MessageBox(f'Error al buscar historial: {err}', 'Error', wx.OK | wx.ICON_ERROR)
+            query = """
+            SELECT Historial.Id, Historial.tipo, Historial.monto, Historial.fecha, Historial.descripcion, viajes.Destino
+            FROM Historial
+            JOIN viajes ON Historial.viaje_id = viajes.Id
+            WHERE Historial.fecha BETWEEN %s AND %s
+            """
+            try:
+                self.cursor.execute(query, (start_date, end_date))
+                rows = self.cursor.fetchall()
+                df = pd.DataFrame(rows, columns=["ID", "Tipo", "Monto", "Fecha", "Descripción", "Destino Viaje"])
+                file_name = f"Historial_{start_date}_to_{end_date}.xlsx"
+                df.to_excel(file_name, index=False)
+                wx.MessageBox(f'Historial exportado a Excel: {file_name}', 'Info', wx.OK | wx.ICON_INFORMATION)
+            except Error as err:
+                wx.MessageBox(f'Error al exportar datos a Excel: {err}', 'Error', wx.OK | wx.ICON_ERROR)
 
-    def on_historial_item_selected(self, event):
-        selected_index = self.historial_list.GetFirstSelected()
-        if selected_index != -1:
-            id_historial = self.historial_list.GetItemText(selected_index, 0)
-            tipo = self.historial_list.GetItemText(selected_index, 1)
-            monto = self.historial_list.GetItemText(selected_index, 2)
-            fecha = self.historial_list.GetItemText(selected_index, 3)
-            descripcion = self.historial_list.GetItemText(selected_index, 4)
-            viaje_id = self.historial_list.GetItemText(selected_index, 5)
-            
-            # Generate PDF for the selected item
-            filename = os.path.expanduser("~/Downloads/comprobante.pdf")
-            self.generar_pdf(tipo, monto, fecha, descripcion, viaje_id, filename)
+        filter_button.Bind(wx.EVT_BUTTON, on_filter)
+        export_button.Bind(wx.EVT_BUTTON, on_export)
 
-    def generar_pdf(self, tipo, monto, fecha, descripcion, viaje_id, filename):
-        c = canvas.Canvas(filename, pagesize=letter)
-        c.drawString(100, 750, f"Comprobante de {tipo.capitalize()}")
-        c.drawString(100, 730, f"Tipo: {tipo.capitalize()}")
-        c.drawString(100, 710, f"Monto: {monto}")
-        c.drawString(100, 690, f"Fecha: {fecha}")
-        c.drawString(100, 670, f"Descripción: {descripcion}")
-        c.drawString(100, 650, f"ID Viaje: {viaje_id}")
-        c.save()
-        wx.MessageBox(f'Comprobante guardado en: {filename}', 'Info', wx.OK | wx.ICON_INFORMATION)
+        sizer.Add(date_sizer, flag=wx.EXPAND | wx.ALL, border=10)
+        sizer.Add(historial_list, proportion=1, flag=wx.EXPAND | wx.ALL, border=10)
+        historial_dialog.SetSizer(sizer)
+        historial_dialog.ShowModal()
+        historial_dialog.Destroy()
 
     def on_item_selected(self, event):
-        # Handle item selection in caja_list
         selected_index = self.caja_list.GetFirstSelected()
         if selected_index != -1:
             id_caja = self.caja_list.GetItemText(selected_index, 0)
-            tipo = self.caja_list.GetItemText(selected_index, 1)
-            monto = self.caja_list.GetItemText(selected_index, 2)
-            fecha = self.caja_list.GetItemText(selected_index, 3)
-            descripcion = self.caja_list.GetItemText(selected_index, 4)
-            viaje_id = self.caja_list.GetItemText(selected_index, 5)
-            
-            # Optionally do something with the selected item, like showing details or editing
-            wx.MessageBox(f'Se ha seleccionado el ID {id_caja}\nTipo: {tipo}\nMonto: {monto}\nFecha: {fecha}\nDescripción: {descripcion}\nID Viaje: {viaje_id}', 'Selección', wx.OK | wx.ICON_INFORMATION)
+            query = "SELECT tipo, monto, fecha, descripcion, viaje_id FROM Caja WHERE Id = %s"
+            try:
+                self.cursor.execute(query, (id_caja,))
+                result = self.cursor.fetchone()
+                if result:
+                    self.tipo_combo.SetValue(result[0])
+                    self.monto_text.SetValue(str(result[1]))
+                    self.fecha_picker.SetValue(wx.DateTimeFromISODate(result[2]))
+                    self.descripcion_text.SetValue(result[3])
+                    viaje_index = self.viaje_combo.FindClientData(result[4])
+                    self.viaje_combo.SetSelection(viaje_index)
+            except Error as err:
+                wx.MessageBox(f'Error al seleccionar datos: {err}', 'Error', wx.OK | wx.ICON_ERROR)
 
-if __name__ == "__main__":
-    app = wx.App(False)
+if __name__ == '__main__':
+    app = wx.App()
     frame = FormularioCaja(None)
     frame.Show()
     app.MainLoop()
